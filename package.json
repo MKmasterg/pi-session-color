@@ -1,0 +1,54 @@
+{
+  "name": "@mkmasterg/pi-session-color",
+  "version": "0.1.0",
+  "description": "/color for pi: give every session its own color profile that survives close and resume",
+  "type": "module",
+  "license": "MIT",
+  "author": "Saleh Mollazadeh",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "color",
+    "theme",
+    "session"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MKmasterg/pi-session-color.git"
+  },
+  "homepage": "https://github.com/MKmasterg/pi-session-color#readme",
+  "bugs": {
+    "url": "https://github.com/MKmasterg/pi-session-color/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/session-color.ts"
+    ]
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "test": "node --test test/*.test.mjs",
+    "verify:package": "node scripts/verify-package.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.6.0",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}
