@@ -73,19 +73,33 @@ async function setup({ branch = [] } = {}) {
 	for (const item of branch) session.appendCustomEntry(item.customType, item.data);
 
 	const base = fixtureBaseTheme();
-	const host = { base, entries, applied: [], notifications: [], status: undefined, session };
+	const host = {
+		base,
+		/** The theme the UI is showing; pi replaces it with the settings theme on a switch. */
+		currentTheme: base,
+		themes: new Map([["dark", base]]),
+		entries,
+		applied: [],
+		notifications: [],
+		status: undefined,
+		session,
+	};
 	host.ctx = {
 		mode: "tui",
 		hasUI: true,
 		sessionManager: session,
 		ui: {
-			theme: base,
+			get theme() {
+				return host.currentTheme;
+			},
 			setTheme(themeOrName) {
 				host.applied.push(themeOrName);
+				if (themeOrName instanceof Theme) host.currentTheme = themeOrName;
+				else host.currentTheme = host.themes.get(themeOrName) ?? host.currentTheme;
 				return { success: true };
 			},
 			getTheme(name) {
-				return name === "dark" ? base : undefined;
+				return host.themes.get(name);
 			},
 			notify: (message, type) => host.notifications.push({ message, type }),
 			setStatus: (_key, text) => {
@@ -221,4 +235,61 @@ test("/color list reports the active color", async () => {
 	await command.handler("ocean", host.ctx);
 	await command.handler("list", host.ctx);
 	assert.match(host.notifications.at(-1).message, /active: ocean/);
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("resume keeps the color when pi re-applies the settings theme after session_start", async () => {
+	const { host, sessionStart } = await setup({ branch: [{ customType: "session-color", data: { name: "ocean" } }] });
+	await sessionStart({ reason: "resume" }, host.ctx);
+	assert.equal(host.currentTheme.name, "color:ocean");
+
+	// pi's theme controller runs applyFromSettings() right after the switch, which
+	// sets the settings theme and discards our in-memory variant.
+	host.currentTheme = host.base;
+
+	await sleep(400); // one guard tick
+	assert.equal(host.currentTheme.name, "color:ocean");
+	assert.equal(colorToHex(host.currentTheme.colors.accent), colorToHex(okhslColor(OCEAN, 0.55, 0.66)));
+	assert.ok(String(host.status).includes("● ocean"));
+});
+
+test("fork keeps the carried color across the same theme re-apply", async () => {
+	const { host, sessionStart } = await setup({ branch: [{ customType: "session-color", data: { name: "emerald" } }] });
+	await sessionStart({ reason: "fork" }, host.ctx);
+	host.currentTheme = host.base;
+	await sleep(400);
+	assert.equal(host.currentTheme.name, "color:emerald");
+});
+
+test("a theme picked after /color keeps the color, re-tinted onto the new theme", async () => {
+	const { host, sessionStart } = await setup({ branch: [{ customType: "session-color", data: { name: "ocean" } }] });
+	await sessionStart({ reason: "resume" }, host.ctx);
+
+	const light = new Theme(
+		Object.fromEntries(Object.entries(host.base.colors).map(([token, color]) => [token, colorToHex(color)])),
+		{},
+		"truecolor",
+		{ name: "light", appearance: "light" },
+	);
+	host.themes.set("light", light);
+	host.currentTheme = light; // as if the user picked it with /settings
+
+	await sleep(400);
+	assert.equal(host.currentTheme.name, "color:ocean");
+	assert.equal(host.currentTheme.appearance, "light");
+	assert.equal(colorToHex(host.currentTheme.colors.accent), colorToHex(okhslColor(OCEAN, 0.6, 0.45)));
+});
+
+test("/color default stops the color from being re-applied", async () => {
+	const { host, command, sessionStart } = await setup({ branch: [{ customType: "session-color", data: { name: "ocean" } }] });
+	await sessionStart({ reason: "resume" }, host.ctx);
+	await command.handler("default", host.ctx);
+	assert.equal(host.currentTheme, host.base);
+
+	const applied = host.applied.length;
+	host.currentTheme = host.base;
+	await sleep(400);
+	assert.equal(host.applied.length, applied);
+	assert.equal(host.currentTheme, host.base);
 });

@@ -43,7 +43,9 @@ The current color also shows in the footer status line as `● name`.
 
 Because variants are built from the live theme each time, they compose with `system`, `dark`, `light`, light/dark pairs, and custom themes. Re-applying the same color is idempotent.
 
-**Startup timing.** On resume, the color is applied after pi's terminal color query settles (~1.5 s), so the saved tint is built from the final colors rather than the grayscale startup guess.
+**Startup timing.** On startup the color is applied after pi's terminal color query settles (~1.5 s), so the saved tint is built from the final colors rather than the grayscale startup guess.
+
+**Surviving the resume theme re-apply.** After `session_start` on a session switch, pi re-applies the theme from your settings, which would discard an in-memory variant. The extension keeps a cheap guard (one theme-name comparison every 250 ms) while a color is active: as soon as the live theme is no longer its own, it rebuilds the tint from whatever theme is now active and applies it again. So `/resume` keeps its color, the footer's `● name` never goes stale, and a theme you pick with `/settings` or `--use-theme` gets tinted with the session color too. `/color default` stops the guard.
 
 **Headless sessions.** `pi -p` and RPC mode have no UI to recolor, but `/color` still records the profile, so the next interactive resume of that session picks it up.
 
@@ -56,7 +58,7 @@ npm test                            # behaviour tests through pi's real extensio
 npm run verify:package              # the npm tarball holds only the extension and its docs
 ```
 
-The tests load the extension through `discoverAndLoadExtensions`, drive the command and `session_start` handlers with a real in-memory `SessionManager`, and assert on the `Theme` instances the extension builds (token values, gradient hue-shifts, idempotency, last-entry-wins on resume).
+The tests load the extension through `discoverAndLoadExtensions`, drive the command and `session_start` handlers with a real in-memory `SessionManager`, and assert on the `Theme` instances the extension builds (token values, gradient hue-shifts, idempotency, last-entry-wins on resume, and the color surviving pi's post-switch re-apply of the settings theme).
 
 ## Releasing
 
