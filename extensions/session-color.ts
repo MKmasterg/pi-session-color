@@ -8,6 +8,12 @@
  * custom entry, so quitting and resuming restores it, while other sessions keep
  * their own color or the default. The theme setting itself is never modified:
  * variants are in-memory Theme instances.
+ *
+ * Pi re-applies the settings theme right after `session_start` when it switches
+ * sessions, which discards an in-memory variant. While a color is active the
+ * extension therefore watches the live theme and re-applies the tint whenever
+ * something else replaced it — the settings theme on resume/fork, or a theme the
+ * user picks with /settings.
  */
 
 import {
@@ -55,6 +61,13 @@ const STATUS_KEY = "session-color";
 const VARIANT_PREFIX = "color:";
 /** Terminal color queries settle quickly, but give slow SSH a moment on startup. */
 const STARTUP_APPLY_DELAY_MS = 1500;
+/**
+ * How often to check that the live theme is still the session's variant. Pi swaps
+ * the settings theme in a moment after `session_start` on a session switch, and
+ * there is no theme-change event to subscribe to, so watching costs one string
+ * comparison per tick — and brings the tint back within a quarter second.
+ */
+const GUARD_INTERVAL_MS = 250;
 
 /** The input-editor border follows this gradient (thinking level → color). */
 const THINKING_TOKENS = [
@@ -125,6 +138,8 @@ function buildVariant(name: string, base: Theme): Theme | undefined {
 	);
 }
 
+const variantName = (name: string) => `${VARIANT_PREFIX}${name}`;
+
 function colorChip(name: string): string {
 	const hex = colorToHex(okhslColor(PALETTE[name].h, 0.55, 0.66));
 	const r = parseInt(hex.slice(1, 3), 16);
@@ -143,6 +158,9 @@ export default function (pi: ExtensionAPI) {
 	/** Name of the theme Pi derived from settings, captured before any variant is applied. */
 	let defaultThemeName: string | undefined;
 	let startupTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Watches for the live theme being replaced; runs while a color is active. */
+	let guardTimer: ReturnType<typeof setInterval> | undefined;
+	let guardCtx: ExtensionContext | undefined;
 
 	function updateStatus(name: string | null, ctx: ExtensionContext) {
 		if (!name) {
@@ -152,8 +170,71 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `● ${name}`));
 	}
 
+	/** Remember the settings-derived theme name whenever a non-variant theme is live. */
+	function noteBaseTheme(theme: Theme) {
+		const name = theme.name;
+		if (name && !name.startsWith(VARIANT_PREFIX)) defaultThemeName = name;
+	}
+
+	/**
+	 * The theme to tint. The live theme wins, unless it is one of our own variants
+	 * (after a switch from another colored session): then tint the settings theme,
+	 * so variants never stack on each other.
+	 */
+	function baseThemeFor(ctx: ExtensionContext): Theme {
+		const live = ctx.ui.theme;
+		if (!live.name?.startsWith(VARIANT_PREFIX)) return live;
+		return (defaultThemeName ? ctx.ui.getTheme(defaultThemeName) : undefined) ?? live;
+	}
+
+	function stopGuard() {
+		if (guardTimer) clearInterval(guardTimer);
+		guardTimer = undefined;
+		guardCtx = undefined;
+	}
+
+	/**
+	 * Re-apply the color if the live theme is no longer our variant. The profile did
+	 * not change, so this neither persists nor notifies — it restores the tint and
+	 * refreshes the (theme-colored) status line.
+	 */
+	function reassertColor(ctx: ExtensionContext): boolean {
+		if (typeof current !== "string") return false;
+		const live = ctx.ui.theme;
+		if (live.name === variantName(current)) return false;
+		noteBaseTheme(live);
+		const variant = buildVariant(current, baseThemeFor(ctx));
+		if (!variant) {
+			stopGuard();
+			return false;
+		}
+		if (!ctx.ui.setTheme(variant).success) {
+			// Visual apply is unavailable (headless); stop watching until the next session start.
+			stopGuard();
+			return false;
+		}
+		updateStatus(current, ctx);
+		return true;
+	}
+
+	/** Keep the session color on screen while pi or the user replaces the live theme. */
+	function startGuard(ctx: ExtensionContext) {
+		stopGuard();
+		if (typeof current !== "string" || !ctx.hasUI) return;
+		guardCtx = ctx;
+		guardTimer = setInterval(() => {
+			if (!guardCtx || typeof current !== "string") {
+				stopGuard();
+				return;
+			}
+			reassertColor(guardCtx);
+		}, GUARD_INTERVAL_MS);
+		guardTimer.unref?.();
+	}
+
 	/** Apply a palette color in-memory. Does not persist unless persist=true. */
 	function applyColor(name: string, ctx: ExtensionContext, persist: boolean): boolean {
+		noteBaseTheme(ctx.ui.theme);
 		const variant = buildVariant(name, ctx.ui.theme);
 		if (!variant) {
 			ctx.ui.notify(`Unknown color: ${name}`, "error");
@@ -168,11 +249,13 @@ export default function (pi: ExtensionAPI) {
 		current = name;
 		updateStatus(name, ctx);
 		if (persist) pi.appendEntry(ENTRY_TYPE, { name });
+		startGuard(ctx);
 		return true;
 	}
 
 	/** Restore the theme Pi derived from settings (in-memory, never writes settings). */
 	function resetToBase(ctx: ExtensionContext, persist = false): boolean {
+		stopGuard();
 		const base = defaultThemeName ? ctx.ui.getTheme(defaultThemeName) : undefined;
 		if (base) {
 			ctx.ui.setTheme(base);
@@ -210,10 +293,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (event, ctx) => {
 		// Capture the settings-derived theme for /color default. Never overwrite
 		// it with one of our own variants (in-process /resume keeps this valid).
-		const themeName = ctx.ui.theme.name;
-		if (themeName && !themeName.startsWith(VARIANT_PREFIX)) {
-			defaultThemeName = themeName;
-		}
+		noteBaseTheme(ctx.ui.theme);
 
 		const saved = savedColor(ctx);
 
@@ -240,6 +320,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		clearTimeout(startupTimer);
 		startupTimer = undefined;
+		stopGuard();
 	});
 
 	// -----------------------------------------------------------------------
